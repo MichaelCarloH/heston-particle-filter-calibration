@@ -1,0 +1,6 @@
+﻿[project]
+name = "heston-particle-filter-calibration"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+
+[tool.uv]
