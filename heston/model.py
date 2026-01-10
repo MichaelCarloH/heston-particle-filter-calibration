@@ -81,18 +81,112 @@ class HestonSSM(ssm.StateSpaceModel):
         
         Uses Euler discretization:
         R_t = (r - 0.5*V_{t-1})Δt + √(V_{t-1}Δt) ε_t
+        
+        Note: We use V_{t-1} (xp) because R_t = ln(S_t) - ln(S_{t-1}) represents
+        the return over the interval [t-1, t], which depends on the variance
+        at the beginning of the interval.
+        
+        At t=0, xp is None, so we use x (V_0) instead.
         """
-        vp = np.maximum(np.asarray(x), 1e-12)  # Ensure positive
+        # Handle initial observation (t=0): use V_0 (x) when xp is None
+        if xp is None:
+            vp = np.maximum(np.asarray(x), 1e-12)  # Use V_0 at t=0
+        else:
+            vp = np.maximum(np.asarray(xp), 1e-12)  # Use V_{t-1} for t>0
         
         # Handle time-varying risk-free rate
+        # Note: t can be 0 to len(data), but r_series has len(data) elements (indices 0 to len(data)-1)
+        # For observation at time t, we use r_{t-1} (the risk-free rate from previous time step)
+        # since the observation depends on V_{t-1}
         if hasattr(self.r, '__len__') and len(self.r) > 1:
-            r_t = self.r[t]
+            # Use r_{t-1} for observation at time t (since observation depends on V_{t-1})
+            # Clamp to valid range [0, len(self.r)-1]
+            if t > 0:
+                r_idx = min(t - 1, len(self.r) - 1)
+            else:
+                r_idx = 0  # At t=0, use first risk-free rate
+            r_t = self.r[r_idx]
         else:
             r_t = self.r
         
         mean = (r_t - 0.5 * vp) * self.dt
         std = np.sqrt(vp * self.dt)
         return dists.Normal(loc=mean, scale=std)
+    
+    def proposal0(self, data):
+        """
+        Initial proposal distribution for guided filter.
+        
+        For the guided filter, this is the optimal proposal at t=0.
+        Since we observe y_0, we can use it to inform the initial proposal.
+        """
+        # For simplicity, use the prior (can be improved with observation y_0)
+        return self.PX0()
+    
+    def proposal(self, t, xp, data):
+        """
+        Optimal proposal distribution for guided filter: p(V_t | V_{t-1} = xp, Y_t = y_t).
+        
+        This combines the transition density p(V_t | V_{t-1}) and the 
+        observation density p(Y_t | V_{t-1}) to get a better proposal.
+        
+        For Heston model with observation R_t:
+        - Transition: V_t ~ N(μ_trans, σ_trans²) where:
+          μ_trans = V_{t-1} + κ(θ - V_{t-1})Δt
+          σ_trans = σ√(V_{t-1}Δt)
+        - Observation: R_t | V_{t-1} ~ N(μ_obs, σ_obs²) where:
+          μ_obs = (r - 0.5*V_{t-1})Δt
+          σ_obs = √(V_{t-1}Δt)
+        
+        The optimal proposal combines both using Bayes' rule.
+        However, since the observation depends on V_{t-1} (not V_t),
+        we use an approximation: use the observation to refine the transition.
+        """
+        vp = np.maximum(np.asarray(xp), 1e-12)
+        
+        # Transition parameters
+        mu_trans = vp + self.kappa * (self.theta - vp) * self.dt
+        sigma_trans = self.sigma * np.sqrt(vp * self.dt)
+        
+        # Observation parameters (using V_{t-1})
+        # Note: t can be 0 to len(data), but r_series has len(data) elements (indices 0 to len(data)-1)
+        # For observation at time t, we use r_{t-1} (the risk-free rate from previous time step)
+        if hasattr(self.r, '__len__') and len(self.r) > 1:
+            # Use r_{t-1} for observation at time t (since observation depends on V_{t-1})
+            # Clamp to valid range [0, len(self.r)-1]
+            if t > 0:
+                r_idx = min(t - 1, len(self.r) - 1)
+            else:
+                r_idx = 0  # At t=0, use first risk-free rate
+            r_t = self.r[r_idx]
+        else:
+            r_t = self.r
+        
+        mu_obs = (r_t - 0.5 * vp) * self.dt
+        sigma_obs = np.sqrt(vp * self.dt)
+        
+        # Optimal proposal: combine transition and observation
+        # Since observation depends on V_{t-1}, we approximate by:
+        # Using the observation to adjust the transition mean
+        # This is a simplified optimal proposal
+        if t < len(data):
+            y_t = data[t]
+            # Weighted combination (simplified - full optimal would require more computation)
+            # Use observation to adjust proposal mean
+            innovation = y_t - mu_obs
+            # Adjust transition mean based on observation
+            # This is an approximation of the true optimal proposal
+            mu_proposal = mu_trans + 0.5 * innovation  # Simplified adjustment
+            sigma_proposal = sigma_trans * 0.9  # Slightly reduce variance
+        else:
+            # If no observation, use transition
+            mu_proposal = mu_trans
+            sigma_proposal = sigma_trans
+        
+        # Ensure positive variance
+        sigma_proposal = np.maximum(sigma_proposal, 1e-6)
+        
+        return dists.Normal(loc=mu_proposal, scale=sigma_proposal)
 
 
 class HestonModel:

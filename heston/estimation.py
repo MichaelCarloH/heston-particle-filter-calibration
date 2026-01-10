@@ -208,7 +208,12 @@ def estimate_pmmh(
                 return dists.Normal(loc=mean, scale=std)
             
             def PY(self, t, xp, x):
-                vp = np.maximum(np.asarray(x), 1e-12)
+                # Use V_{t-1} (xp) to match paper's discretization
+                # Handle initial observation (t=0): use V_0 (x) when xp is None
+                if xp is None:
+                    vp = np.maximum(np.asarray(x), 1e-12)  # Use V_0 at t=0
+                else:
+                    vp = np.maximum(np.asarray(xp), 1e-12)  # Use V_{t-1} for t>0
                 r_t = self.r[t] if hasattr(self.r, '__len__') and len(self.r) > 1 else self.r
                 mean = (r_t - 0.5 * vp) * self.dt
                 std = np.sqrt(vp * self.dt)
